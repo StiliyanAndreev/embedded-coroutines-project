@@ -1,4 +1,4 @@
-# ⚡ Embedded HTTP Server: C++20 Coroutines with Static Memory
+#  Embedded HTTP Server: C++20 Coroutines with Static Memory
 
 > **Course:** Embedded Systems (Politecnico di Milano)  
 > **Author:** Stiliyan Andreev  
@@ -12,7 +12,7 @@ This project implements a **lightweight HTTP 1.0 Server** using **C++20 Coroutin
 Unlike simple simulations, **this is a functional server** listening on TCP Port 8080. It accepts connections from real-world clients (like `wget`, `curl`, or web browsers), processes GET requests, and sends valid HTTP responses using a custom static allocator.
 
 
-## 🚀 Key Features
+##  Key Features
 
 ### 1. Real-World Connectivity
 * **Server-Side Implementation:** Listens on `localhost:8080` using standard Sockets (Winsock).
@@ -65,7 +65,7 @@ Sends "200 OK" response (send).
 
 Closes socket.
 
-💻 How to Build and Run
+ How to Build and Run
 Prerequisites
 OS: Windows (Uses winsock2.h).
 
@@ -82,7 +82,7 @@ Run (Ctrl+F5).
 
 Open a terminal and test: curl http://localhost:8080.
 
-📝 Expected Output
+Expected Output
 Server Console:
 ```
 --- HTTP Server listening on port 8080 ---
