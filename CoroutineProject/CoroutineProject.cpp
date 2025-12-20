@@ -1,54 +1,44 @@
-﻿#include <iostream>
+﻿#define _WINSOCK_DEPRECATED_NO_WARNINGS
+#include <iostream>
 #include <coroutine>
 #include <cstdio>
 #include <cstring>
-#include <cstddef>
+#include <winsock2.h> 
+#include <ws2tcpip.h>
+
+// Link with Ws2_32.lib automatically
+#pragma comment (lib, "Ws2_32.lib")
 
 // PART 0: Static Allocator
-// REQUIREMENT: No Dynamic Memory (No malloc/new on Heap)
-// REQUIREMENT: Bounded Memory Usage (Fixed size pool)
-
-static char task_memory_pool[2048]; // 2KB fixed memory for all coroutine frames
+// Strategy: Zero Heap Usage. All tasks live in this buffer.
+static char task_memory_pool[4096];
 static size_t pool_offset = 0;
 
 void* my_static_alloc(size_t size) {
-    // Simple bump pointer allocator
     if (pool_offset + size > sizeof(task_memory_pool)) {
         std::cerr << "[CRITICAL] Out of static memory!\n";
         std::terminate();
     }
     void* ptr = &task_memory_pool[pool_offset];
     pool_offset += size;
-
-    std::cout << "[MEMORY] Allocated " << size << " bytes. (Used: " << pool_offset << "/" << sizeof(task_memory_pool) << ")\n";
     return ptr;
 }
 
 void my_static_free(void* ptr, size_t size) {
-    // In this embedded pattern, we do not fragment memory.
-    // We typically reset the entire pool only when the system restarts.
-    std::cout << "[MEMORY] Free ignored (Static Strategy).\n";
+    // No-op for static strategy (simple bump pointer)
 }
 
 // PART 1: Task Definition (Coroutine Handle)
-
 struct Task {
     struct promise_type {
-        // CRITICAL: Override 'new' to force storage in our static pool
-        // This ensures the coroutine frame is NOT on the heap.
-        void* operator new(size_t size) {
-            return my_static_alloc(size);
-        }
-
-        void operator delete(void* ptr, size_t size) {
-            my_static_free(ptr, size);
-        }
+        // CRITICAL: Override 'new' to force storage in static pool
+        void* operator new(size_t size) { return my_static_alloc(size); }
+        void operator delete(void* ptr, size_t size) { my_static_free(ptr, size); }
 
         Task get_return_object() {
             return Task{ std::coroutine_handle<promise_type>::from_promise(*this) };
         }
-
-        std::suspend_always initial_suspend() { return {}; } // Suspend immediately (lazy start)
+        std::suspend_always initial_suspend() { return {}; }
         std::suspend_always final_suspend() noexcept { return {}; }
         void return_void() {}
         void unhandled_exception() { std::terminate(); }
@@ -63,58 +53,96 @@ struct Task {
     bool done() const { return !handle || handle.done(); }
 };
 
-// PART 2: Shared Data Buffer
-// REQUIREMENT: No std::string or dynamic vectors
 
-static char global_buffer[512];
+// PART 2: Real Server Logic
+static char recv_buffer[1024];
 
-// PART 3: Protocol Implementation (HTTP Simulation)
-// REQUIREMENT: Concurrent execution (Not Asynchronous/Threaded)
+// Updated Content-Length to match the new longer string
+static const char* response_ok =
+"HTTP/1.0 200 OK\r\n"
+"Content-Type: text/plain\r\n"
+"Content-Length: 32\r\n"
+"Connection: close\r\n"
+"\r\n"
+"Hello World! It's working!!!!!!\n";
 
-Task http_get(const char* path) {
-    // Step 1: Request Preparation
-    co_await std::suspend_always{};
+// Coroutine that handles ONE client connection
+Task handle_client(SOCKET client_socket) {
+    co_await std::suspend_always{}; // Start task
 
-    std::snprintf(global_buffer, sizeof(global_buffer), "GET %s HTTP/1.1", path);
-    std::cout << "[GET] Request: " << global_buffer << "\n";
+    std::cout << "[SERVER] Client connected. Reading request...\n";
 
-    // Step 2: Wait for Response (Yield control to scheduler)
-    co_await std::suspend_always{};
+    // 1. Read from real socket
+    int bytes_received = recv(client_socket, recv_buffer, sizeof(recv_buffer) - 1, 0);
 
-    std::cout << "[GET] Done (200 OK).\n";
-}
+    if (bytes_received > 0) {
+        recv_buffer[bytes_received] = '\0';
+        std::cout << "[SERVER] Received:\n" << recv_buffer << "\n";
 
-Task http_post(const char* path) {
-    // Step 1: Request Preparation
-    co_await std::suspend_always{};
-
-    std::snprintf(global_buffer, sizeof(global_buffer), "POST %s HTTP/1.1", path);
-    std::cout << "[POST] Request: " << global_buffer << "\n";
-
-    // Step 2: Wait for Response (Yield control to scheduler)
-    co_await std::suspend_always{};
-
-    std::cout << "[POST] Done (201 Created).\n";
-}
-
-// PART 4: Main Scheduler
-// REQUIREMENT: Single-threaded cooperative multitasking
-
-int main() {
-    std::cout << "--- Embedded C++20 Coroutines (Static Memory) ---\n";
-
-    // Initialize tasks (Allocates memory from static pool now)
-    Task t1 = http_get("/index.html");
-    Task t2 = http_post("/api/login");
-
-    std::cout << "--- Scheduler Started ---\n";
-
-    // Simple Round-Robin Scheduler
-    while (!t1.done() || !t2.done()) {
-        if (!t1.done()) t1.resume();
-        if (!t2.done()) t2.resume();
+        // 2. Simple Parsing (Check if it is GET)
+        if (strncmp(recv_buffer, "GET", 3) == 0) {
+            std::cout << "[SERVER] GET request detected. Sending response...\n";
+            send(client_socket, response_ok, (int)strlen(response_ok), 0);
+        }
     }
 
-    std::cout << "--- All Tasks Finished ---\n";
+    // 3. Close connection
+    closesocket(client_socket);
+    std::cout << "[SERVER] Connection closed.\n";
+
+    co_return;
+}
+
+
+// PART 3: Main Server Loop
+int main() {
+    // Initialize Winsock
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) return 1;
+
+    // Create Server Socket
+    SOCKET listen_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listen_socket == INVALID_SOCKET) { WSACleanup(); return 1; }
+
+    // Bind to port 8080
+    sockaddr_in server_addr;
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(8080);
+
+    if (bind(listen_socket, (sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
+        std::cerr << "Bind failed. Port 8080 might be in use.\n";
+        closesocket(listen_socket);
+        WSACleanup();
+        return 1;
+    }
+
+    // Listen
+    if (listen(listen_socket, SOMAXCONN) == SOCKET_ERROR) return 1;
+
+    std::cout << "--- HTTP Server listening on port 8080 ---\n";
+    std::cout << "--- Run 'curl -v http://localhost:8080' to test ---\n";
+
+    // Single-Threaded Loop
+    while (true) {
+        sockaddr_in client_addr;
+        int client_len = sizeof(client_addr);
+
+        // Block until a client connects
+        SOCKET client_socket = accept(listen_socket, (sockaddr*)&client_addr, &client_len);
+
+        if (client_socket != INVALID_SOCKET) {
+            // Create the coroutine task (Allocates from STATIC pool)
+            Task client_task = handle_client(client_socket);
+
+            // Execute the task cooperatively until it finishes
+            while (!client_task.done()) {
+                client_task.resume();
+            }
+        }
+    }
+
+    closesocket(listen_socket);
+    WSACleanup();
     return 0;
 }
