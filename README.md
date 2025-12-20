@@ -1,96 +1,111 @@
-# ⚡ Embedded Systems Project: C++20 Coroutines with Static Memory
+# ⚡ Embedded HTTP Server: C++20 Coroutines with Static Memory
 
 > **Course:** Embedded Systems (Politecnico di Milano)  
 > **Author:** Stiliyan Andreev  
 > **Matricola:** 294967  
 
----
 
 ## 📖 Project Overview
 
-This project explores the feasibility of using **C++20 Coroutines** in strict embedded environments where dynamic memory allocation is forbidden or dangerous. 
+This project implements a **lightweight HTTP 1.0 Server** using **C++20 Coroutines** and **Winsock**. It is designed to demonstrate how modern C++ features can be used in strict embedded environments where **dynamic memory allocation (Heap) is forbidden**.
 
-The goal is to implement a **concurrent, cooperative multitasking system** simulating an HTTP protocol **without using the Heap (malloc/new)**. By overriding the default compiler behavior, this project demonstrates that modern C++ features can be zero-cost abstractions suitable for constrained systems.
+Unlike simple simulations, **this is a functional server** listening on TCP Port 8080. It accepts connections from real-world clients (like `wget`, `curl`, or web browsers), processes GET requests, and sends valid HTTP responses using a custom static allocator.
 
----
 
 ## 🚀 Key Features
 
-### 🚫 Zero Dynamic Allocation (No `malloc`/`new`)
-Standard C++ coroutines allocate their state frame on the heap. 
-* **Solution:** I overrode the `operator new` and `operator delete` inside the coroutine `promise_type`.
-* **Result:** All coroutine frames are stored in a fixed-size **static memory pool**.
+### 1. Real-World Connectivity
+* **Server-Side Implementation:** Listens on `localhost:8080` using standard Sockets (Winsock).
+* **Compatibility:** Can be tested with standard tools:
+  ```
+  # Test with curl
+  curl -v http://localhost:8080
+  ```
 
-### 📦 Bounded Memory Usage
-* Memory usage is **deterministic** and known at compile-time.
-* The system uses a simple **bump-pointer allocator** strictly limited to a static buffer (`2048 bytes`).
-* If the pool is exhausted, the system terminates deterministically (simulating a hard fault protection).
+  2. Zero Dynamic Allocation (No malloc/new)
+Problem: Standard C++ coroutines allocate their state frame on the heap.
 
-### 🔄 Concurrency without Threads
-* **Requirement:** "Concurrent, not asynchronous".
-* **Implementation:** A **Single-Threaded Cooperative Scheduler**.
-* Tasks yield control using `co_await std::suspend_always{}`, simulating I/O waits. This allows the main loop to interleave the execution of simulated HTTP GET and POST requests without OS threads.
+Solution: I overrode the operator new and operator delete inside the coroutine promise_type.
 
-### 🌐 HTTP Protocol Simulation
-* Simulates the state machine of HTTP/1.1 (Request Preparation → Sending → Response).
-* Uses a shared static buffer (`global_buffer`) to avoid `std::string` allocations entirely.
+Result: All coroutine state frames are stored in a fixed-size static memory pool (4KB).
 
----
+Verification: The system logs memory usage and relies on a custom static allocator, ensuring deterministic behavior.
 
-## 🛠️ Technical Implementation
+3. Cooperative Task Scheduling
+The server accepts a connection and spawns a Coroutine Task.
 
-### The Custom Allocator
-To bypass the compiler's default heap allocation for coroutine frames, the following mechanism is used inside the `promise_type` struct:
+The task is executed cooperatively by the main scheduler loop, handling reading, parsing, and sending data without spawning OS threads.
 
-```cpp
+🛠️ Technical Implementation
+The Static Allocator
+To ensure zero heap usage, the coroutine promise overrides memory allocation to use a static buffer instead of malloc:
+
+```
 // Inside promise_type struct
 void* operator new(size_t size) {
-    return my_static_alloc(size); // Redirects to our static array
+    return my_static_alloc(size); // Redirects to static char array[4096]
 }
 
 void operator delete(void* ptr, size_t size) {
     my_static_free(ptr, size);    // No-op in this static strategy
 }
 ```
+Server Logic Flow
+Init: Winsock setup, Socket creation, Bind to Port 8080, Listen.
 
-This ensures that the Assembly code generated for creating the coroutine frame jumps to the static pool logic instead of the system's malloc.
+Loop: Blocks on accept() to wait for a client.
 
-Verification
-The application logs memory usage to the console to prove that no heap memory is touched:
-```
-[MEMORY] Allocated 272 bytes. (Used: 272/2048)
-```
+Handle: Spawns a handle_client coroutine task.
 
-⚠️ Limitations (Design Choices)
-Fixed Memory Pool: The pool size is hardcoded to 2048 bytes. In a production system, this would be tuned based on linker analysis.
+Coroutine: * Reads data from socket (recv).
 
-Scheduling: The scheduler uses a simple Round-Robin approach without priority handling.
+Checks for "GET".
 
-Network: The network layer is simulated via console output for demonstration purposes (no real TCP stack).
+Sends "200 OK" response (send).
+
+Closes socket.
 
 💻 How to Build and Run
 Prerequisites
-Compiler: MSVC (Visual Studio 2022) or GCC 10+
+OS: Windows (Uses winsock2.h).
 
-Standard: C++20 is REQUIRED (/std:c++20 flag).
+Compiler: MSVC (Visual Studio 2022).
 
-Build with Visual Studio 2022
-Open the solution file (.sln) or the folder in Visual Studio.
+Standard: C++20 (/std:c++20).
 
-Ensure the C++ Language Standard is set to ISO C++20 Standard.
+Steps
+Open the solution in Visual Studio.
 
-Build the solution (Ctrl+Shift+B).
+Build (Ctrl+Shift+B).
 
-Run without debugging (Ctrl+F5).
+Run (Ctrl+F5).
+
+Open a terminal and test: curl http://localhost:8080.
+
+📝 Expected Output
+Server Console:
 ```
---- Embedded C++20 Coroutines (Static Memory) ---
-[MEMORY] Allocated 272 bytes. (Used: 272/2048)
-[MEMORY] Allocated 272 bytes. (Used: 544/2048)
---- Scheduler Started ---
-[GET] Request: GET /index.html HTTP/1.1
-[POST] Request: POST /api/login HTTP/1.1
-[GET] Done (200 OK).
-[POST] Done (201 Created).
---- All Tasks Finished ---
+--- HTTP Server listening on port 8080 ---
+--- Run 'curl -v http://localhost:8080' to test ---
+[SERVER] Client connected. Reading request...
+[SERVER] Received:
+GET / HTTP/1.1
+User-Agent: Mozilla/5.0 ...
+Host: localhost:8080
+...
+[SERVER] GET request detected. Sending response...
+[SERVER] Connection closed.
 ```
-<img width="1107" height="361" alt="image" src="https://github.com/user-attachments/assets/097b314f-68e2-4951-b264-6a3daa6e4802" />
+
+Client Terminal (PowerShell/curl):
+```
+StatusCode        : 200
+StatusDescription : OK
+Content           : Hello World! It's working!!!!!!
+RawContent        : HTTP/1.0 200 OK
+                    Connection: close
+                    Content-Length: 32
+                    Content-Type: text/plain
+
+```
+
