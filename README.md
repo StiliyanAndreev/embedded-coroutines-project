@@ -1,111 +1,176 @@
-#  Embedded HTTP Server: C++20 Coroutines with Static Memory
+Embedded HTTP Server: C++20 Coroutines with Static Memory
+Course: Embedded Systems (Politecnico di Milano) Author: Stiliyan Andreev Matricola: 294967
 
-> **Course:** Embedded Systems (Politecnico di Milano)  
-> **Author:** Stiliyan Andreev  
-> **Matricola:** 294967  
+Project Overview
+This project implements a Single-Threaded, Cooperative HTTP 1.0 Server using C++20 Coroutines and Winsock.
 
+It is designed to simulate a safety-critical embedded environment where Heap allocation (malloc/new) is strictly forbidden and OS Threads are too heavy. The server handles multiple concurrent connections on a single thread by using a custom scheduler and non-blocking I/O.
 
-## 📖 Project Overview
+Key Architectural Pillars
+1. Zero Dynamic Allocation (Static Memory Only)
+To comply with strict embedded constraints, this project does not use the Heap.
 
-This project implements a **lightweight HTTP 1.0 Server** using **C++20 Coroutines** and **Winsock**. It is designed to demonstrate how modern C++ features can be used in strict embedded environments where **dynamic memory allocation (Heap) is forbidden**.
+Strategy: A fixed-size 64KB global buffer (task_memory_pool) is allocated at compile-time (BSS segment).
 
-Unlike simple simulations, **this is a functional server** listening on TCP Port 8080. It accepts connections from real-world clients (like `wget`, `curl`, or web browsers), processes GET requests, and sends valid HTTP responses using a custom static allocator.
+Implementation: The standard operator new is overridden inside the Coroutine promise_type.
 
+Result: All coroutine frames and local variables are stored in this static buffer. If the buffer is full, the system terminates deterministically rather than fragmenting memory.
 
-##  Key Features
+2. Cooperative Multitasking (No OS Threads)
+Instead of using heavy OS threads (Preemptive Multitasking), this server uses Cooperative Multitasking.
 
-### 1. Real-World Connectivity
-* **Server-Side Implementation:** Listens on `localhost:8080` using standard Sockets (Winsock).
-* **Compatibility:** Can be tested with standard tools:
-  ```
-  # Test with curl
-  curl -v http://localhost:8080
-  ```
+Coroutines: Each client connection is handled by a Task coroutine.
 
-  2. Zero Dynamic Allocation (No malloc/new)
-Problem: Standard C++ coroutines allocate their state frame on the heap.
+Context Switching: When a task waits for I/O, it yields control (co_await) back to the main scheduler.
 
-Solution: I overrode the operator new and operator delete inside the coroutine promise_type.
+Efficiency: This allows handling up to 5 concurrent clients on a single CPU thread with minimal overhead.
 
-Result: All coroutine state frames are stored in a fixed-size static memory pool (4KB).
+3. Non-Blocking I/O & Concurrency
+The server uses Non-Blocking Sockets (FIONBIO mode) to prevent slow clients from freezing the system.
 
-Verification: The system logs memory usage and relies on a custom static allocator, ensuring deterministic behavior.
+The Logic: When recv() returns WSAEWOULDBLOCK (no data ready), the coroutine suspends execution immediately.
 
-3. Cooperative Task Scheduling
-The server accepts a connection and spawns a Coroutine Task.
+The Scheduler: The main() loop then moves to the next client in the queue (Round-Robin scheduling).
 
-The task is executed cooperatively by the main scheduler loop, handling reading, parsing, and sending data without spawning OS threads.
+Robustness: This ensures that a client sleeping or sending data slowly does not block other clients.
 
-🛠️ Technical Implementation
+Technical Implementation Details
 The Static Allocator
-To ensure zero heap usage, the coroutine promise overrides memory allocation to use a static buffer instead of malloc:
-
+We intercept C++ memory requests to ensure they go to our fixed buffer:
 ```
 // Inside promise_type struct
 void* operator new(size_t size) {
-    return my_static_alloc(size); // Redirects to static char array[4096]
+    return my_static_alloc(size); // Redirects to static char task_memory_pool[65536]
 }
 
 void operator delete(void* ptr, size_t size) {
-    my_static_free(ptr, size);    // No-op in this static strategy
+    my_static_free(ptr, size);    // No-op (Bump-pointer strategy)
 }
 ```
-Server Logic Flow
-Init: Winsock setup, Socket creation, Bind to Port 8080, Listen.
-
-Loop: Blocks on accept() to wait for a client.
-
-Handle: Spawns a handle_client coroutine task.
-
-Coroutine: * Reads data from socket (recv).
-
-Checks for "GET".
-
-Sends "200 OK" response (send).
-
-Closes socket.
-
- How to Build and Run
+The State Machine (Non-Blocking Read)
+The server handles TCP fragmentation and polling using a state machine loop:
+```
+if (bytes == SOCKET_ERROR) {
+    int err = WSAGetLastError();
+    if (err == WSAEWOULDBLOCK) {
+        // No data yet? Pause task and yield to scheduler.
+        co_await std::suspend_always{};
+        continue;
+    }
+}
+```
+How to Build and Run
 Prerequisites
-OS: Windows (Uses winsock2.h).
+OS: Windows (Required for winsock2.h)
 
-Compiler: MSVC (Visual Studio 2022).
+Compiler: MSVC (Visual Studio 2022 recommended)
 
-Standard: C++20 (/std:c++20).
+Standard: C++20 (/std:c++20)
 
 Steps
-Open the solution in Visual Studio.
+Open the project in Visual Studio.
 
-Build (Ctrl+Shift+B).
+Ensure C++20 is selected in Project Properties -> C/C++ -> Language.
 
-Run (Ctrl+F5).
+Build the solution (Ctrl+Shift+B).
 
-Open a terminal and test: curl http://localhost:8080.
+Run the server (Ctrl+F5).
 
-Expected Output
-Server Console:
+Testing & Verification
+1. Basic Connection Test
+Open a terminal and run curl:
 ```
---- HTTP Server listening on port 8080 ---
---- Run 'curl -v http://localhost:8080' to test ---
-[SERVER] Client connected. Reading request...
-[SERVER] Received:
-GET / HTTP/1.1
-User-Agent: Mozilla/5.0 ...
-Host: localhost:8080
-...
-[SERVER] GET request detected. Sending response...
-[SERVER] Connection closed.
+curl -UseBasicParsing http://localhost:8080
 ```
+Expected Output: 
+```
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
 
-Client Terminal (PowerShell/curl):
-```
+Install the latest PowerShell for new features and improvements! https://aka.ms/PSWindows
+
+PS C:\Users\stili> curl -UseBasicParsing http://localhost:8080
+
+
 StatusCode        : 200
 StatusDescription : OK
-Content           : Hello World! It's working!!!!!!
+Content           : Hello World!
+
 RawContent        : HTTP/1.0 200 OK
                     Connection: close
-                    Content-Length: 32
+                    Content-Length: 13
                     Content-Type: text/plain
 
+                    Hello World!
+
+Forms             :
+Headers           : {[Connection, close], [Content-Length, 13], [Content-Type, text/plain]}
+Images            : {}
+InputFields       : {}
+Links             : {}
+ParsedHtml        :
+RawContentLength  : 13
+
+
+
+PS C:\Users\stili> curl -UseBasicParsing http://localhost:8080
+
+
+StatusCode        : 200
+StatusDescription : OK
+Content           : Hello World!
+
+RawContent        : HTTP/1.0 200 OK
+                    Connection: close
+                    Content-Length: 13
+                    Content-Type: text/plain
+
+                    Hello World!
+
+Forms             :
+Headers           : {[Connection, close], [Content-Length, 13], [Content-Type, text/plain]}
+Images            : {}
+InputFields       : {}
+Links             : {}
+ParsedHtml        :
+RawContentLength  : 13
 ```
 
+From Python file slow.py on my Dekstop:
+```
+PS C:\Users\stili> cd Desktop
+PS C:\Users\stili\Desktop> python slow.py
+--- Client A Connecting... ---
+--- Client A Connected! I will sleep for 10 seconds... ---
+--- Client A Waking up and sending data! ---
+Response: HTTP/1.0 200 OK
+Content-Type: text/plain
+Content-Length: 13
+Connection: close
+
+Hello World!
+
+PS C:\Users\stili\Desktop>
+```
+You need to run Ctrl + F5. then another terminal(windows powershell) execute - (cd Dekstop) and (python solve.py).
+on the third terminal i put ``` curl -UseBasicParsing http://localhost:8080 ```
+output for the --- HTTP Server (Async/Non-Blocking) on 8080 --- (first terminal) it is:
+```
+--- HTTP Server (Async/Non-Blocking) on 8080 ---
+[SCHEDULER] New client in slot 0
+[SERVER] Full request received.
+[SERVER] Task finished.
+[SCHEDULER] New client in slot 1
+[SERVER] Full request received.
+[SERVER] Task finished.
+[SCHEDULER] New client in slot 1
+[SERVER] Full request received.
+[SERVER] Task finished.
+[SCHEDULER] New client in slot 1
+[SERVER] Full request received.
+[SERVER] Task finished.
+[SERVER] Full request received.
+[SERVER] Task finished.
+[SCHEDULER] New client in slot 0
+
+```
