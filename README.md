@@ -1,96 +1,176 @@
-# ⚡ Embedded Systems Project: C++20 Coroutines with Static Memory
+Embedded HTTP Server: C++20 Coroutines with Static Memory
+Course: Embedded Systems (Politecnico di Milano) Author: Stiliyan Andreev Matricola: 294967
 
-> **Course:** Embedded Systems (Politecnico di Milano)  
-> **Author:** Stiliyan Andreev  
-> **Matricola:** 294967  
+Project Overview
+This project implements a Single-Threaded, Cooperative HTTP 1.0 Server using C++20 Coroutines and Winsock.
 
----
+It is designed to simulate a safety-critical embedded environment where Heap allocation (malloc/new) is strictly forbidden and OS Threads are too heavy. The server handles multiple concurrent connections on a single thread by using a custom scheduler and non-blocking I/O.
 
-## 📖 Project Overview
+Key Architectural Pillars
+1. Zero Dynamic Allocation (Static Memory Only)
+To comply with strict embedded constraints, this project does not use the Heap.
 
-This project explores the feasibility of using **C++20 Coroutines** in strict embedded environments where dynamic memory allocation is forbidden or dangerous. 
+Strategy: A fixed-size 64KB global buffer (task_memory_pool) is allocated at compile-time (BSS segment).
 
-The goal is to implement a **concurrent, cooperative multitasking system** simulating an HTTP protocol **without using the Heap (malloc/new)**. By overriding the default compiler behavior, this project demonstrates that modern C++ features can be zero-cost abstractions suitable for constrained systems.
+Implementation: The standard operator new is overridden inside the Coroutine promise_type.
 
----
+Result: All coroutine frames and local variables are stored in this static buffer. If the buffer is full, the system terminates deterministically rather than fragmenting memory.
 
-## 🚀 Key Features
+2. Cooperative Multitasking (No OS Threads)
+Instead of using heavy OS threads (Preemptive Multitasking), this server uses Cooperative Multitasking.
 
-### 🚫 Zero Dynamic Allocation (No `malloc`/`new`)
-Standard C++ coroutines allocate their state frame on the heap. 
-* **Solution:** I overrode the `operator new` and `operator delete` inside the coroutine `promise_type`.
-* **Result:** All coroutine frames are stored in a fixed-size **static memory pool**.
+Coroutines: Each client connection is handled by a Task coroutine.
 
-### 📦 Bounded Memory Usage
-* Memory usage is **deterministic** and known at compile-time.
-* The system uses a simple **bump-pointer allocator** strictly limited to a static buffer (`2048 bytes`).
-* If the pool is exhausted, the system terminates deterministically (simulating a hard fault protection).
+Context Switching: When a task waits for I/O, it yields control (co_await) back to the main scheduler.
 
-### 🔄 Concurrency without Threads
-* **Requirement:** "Concurrent, not asynchronous".
-* **Implementation:** A **Single-Threaded Cooperative Scheduler**.
-* Tasks yield control using `co_await std::suspend_always{}`, simulating I/O waits. This allows the main loop to interleave the execution of simulated HTTP GET and POST requests without OS threads.
+Efficiency: This allows handling up to 5 concurrent clients on a single CPU thread with minimal overhead.
 
-### 🌐 HTTP Protocol Simulation
-* Simulates the state machine of HTTP/1.1 (Request Preparation → Sending → Response).
-* Uses a shared static buffer (`global_buffer`) to avoid `std::string` allocations entirely.
+3. Non-Blocking I/O & Concurrency
+The server uses Non-Blocking Sockets (FIONBIO mode) to prevent slow clients from freezing the system.
 
----
+The Logic: When recv() returns WSAEWOULDBLOCK (no data ready), the coroutine suspends execution immediately.
 
-## 🛠️ Technical Implementation
+The Scheduler: The main() loop then moves to the next client in the queue (Round-Robin scheduling).
 
-### The Custom Allocator
-To bypass the compiler's default heap allocation for coroutine frames, the following mechanism is used inside the `promise_type` struct:
+Robustness: This ensures that a client sleeping or sending data slowly does not block other clients.
 
-```cpp
+Technical Implementation Details
+The Static Allocator
+We intercept C++ memory requests to ensure they go to our fixed buffer:
+```
 // Inside promise_type struct
 void* operator new(size_t size) {
-    return my_static_alloc(size); // Redirects to our static array
+    return my_static_alloc(size); // Redirects to static char task_memory_pool[65536]
 }
 
 void operator delete(void* ptr, size_t size) {
-    my_static_free(ptr, size);    // No-op in this static strategy
+    my_static_free(ptr, size);    // No-op (Bump-pointer strategy)
 }
 ```
-
-This ensures that the Assembly code generated for creating the coroutine frame jumps to the static pool logic instead of the system's malloc.
-
-Verification
-The application logs memory usage to the console to prove that no heap memory is touched:
+The State Machine (Non-Blocking Read)
+The server handles TCP fragmentation and polling using a state machine loop:
 ```
-[MEMORY] Allocated 272 bytes. (Used: 272/2048)
+if (bytes == SOCKET_ERROR) {
+    int err = WSAGetLastError();
+    if (err == WSAEWOULDBLOCK) {
+        // No data yet? Pause task and yield to scheduler.
+        co_await std::suspend_always{};
+        continue;
+    }
+}
 ```
-
-⚠️ Limitations (Design Choices)
-Fixed Memory Pool: The pool size is hardcoded to 2048 bytes. In a production system, this would be tuned based on linker analysis.
-
-Scheduling: The scheduler uses a simple Round-Robin approach without priority handling.
-
-Network: The network layer is simulated via console output for demonstration purposes (no real TCP stack).
-
-💻 How to Build and Run
+How to Build and Run
 Prerequisites
-Compiler: MSVC (Visual Studio 2022) or GCC 10+
+OS: Windows (Required for winsock2.h)
 
-Standard: C++20 is REQUIRED (/std:c++20 flag).
+Compiler: MSVC (Visual Studio 2022 recommended)
 
-Build with Visual Studio 2022
-Open the solution file (.sln) or the folder in Visual Studio.
+Standard: C++20 (/std:c++20)
 
-Ensure the C++ Language Standard is set to ISO C++20 Standard.
+Steps
+Open the project in Visual Studio.
+
+Ensure C++20 is selected in Project Properties -> C/C++ -> Language.
 
 Build the solution (Ctrl+Shift+B).
 
-Run without debugging (Ctrl+F5).
+Run the server (Ctrl+F5).
+
+Testing & Verification
+1. Basic Connection Test
+Open a terminal and run curl:
 ```
---- Embedded C++20 Coroutines (Static Memory) ---
-[MEMORY] Allocated 272 bytes. (Used: 272/2048)
-[MEMORY] Allocated 272 bytes. (Used: 544/2048)
---- Scheduler Started ---
-[GET] Request: GET /index.html HTTP/1.1
-[POST] Request: POST /api/login HTTP/1.1
-[GET] Done (200 OK).
-[POST] Done (201 Created).
---- All Tasks Finished ---
+curl -UseBasicParsing http://localhost:8080
 ```
-<img width="1107" height="361" alt="image" src="https://github.com/user-attachments/assets/097b314f-68e2-4951-b264-6a3daa6e4802" />
+Expected Output: 
+```
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+Install the latest PowerShell for new features and improvements! https://aka.ms/PSWindows
+
+PS C:\Users\stili> curl -UseBasicParsing http://localhost:8080
+
+
+StatusCode        : 200
+StatusDescription : OK
+Content           : Hello World!
+
+RawContent        : HTTP/1.0 200 OK
+                    Connection: close
+                    Content-Length: 13
+                    Content-Type: text/plain
+
+                    Hello World!
+
+Forms             :
+Headers           : {[Connection, close], [Content-Length, 13], [Content-Type, text/plain]}
+Images            : {}
+InputFields       : {}
+Links             : {}
+ParsedHtml        :
+RawContentLength  : 13
+
+
+
+PS C:\Users\stili> curl -UseBasicParsing http://localhost:8080
+
+
+StatusCode        : 200
+StatusDescription : OK
+Content           : Hello World!
+
+RawContent        : HTTP/1.0 200 OK
+                    Connection: close
+                    Content-Length: 13
+                    Content-Type: text/plain
+
+                    Hello World!
+
+Forms             :
+Headers           : {[Connection, close], [Content-Length, 13], [Content-Type, text/plain]}
+Images            : {}
+InputFields       : {}
+Links             : {}
+ParsedHtml        :
+RawContentLength  : 13
+```
+
+From Python file slow.py on my Dekstop:
+```
+PS C:\Users\stili> cd Desktop
+PS C:\Users\stili\Desktop> python slow.py
+--- Client A Connecting... ---
+--- Client A Connected! I will sleep for 10 seconds... ---
+--- Client A Waking up and sending data! ---
+Response: HTTP/1.0 200 OK
+Content-Type: text/plain
+Content-Length: 13
+Connection: close
+
+Hello World!
+
+PS C:\Users\stili\Desktop>
+```
+You need to run Ctrl + F5. then another terminal(windows powershell) execute - (cd Dekstop) and (python solve.py).
+on the third terminal i put ``` curl -UseBasicParsing http://localhost:8080 ```
+output for the --- HTTP Server (Async/Non-Blocking) on 8080 --- (first terminal) it is:
+```
+--- HTTP Server (Async/Non-Blocking) on 8080 ---
+[SCHEDULER] New client in slot 0
+[SERVER] Full request received.
+[SERVER] Task finished.
+[SCHEDULER] New client in slot 1
+[SERVER] Full request received.
+[SERVER] Task finished.
+[SCHEDULER] New client in slot 1
+[SERVER] Full request received.
+[SERVER] Task finished.
+[SCHEDULER] New client in slot 1
+[SERVER] Full request received.
+[SERVER] Task finished.
+[SERVER] Full request received.
+[SERVER] Task finished.
+[SCHEDULER] New client in slot 0
+
+```
