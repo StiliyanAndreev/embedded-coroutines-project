@@ -1,5 +1,5 @@
 Embedded HTTP Server: C++20 Coroutines with Static Memory
-Course: Embedded Systems (Politecnico di Milano) Author: Stiliyan Andreev Matricola: 294967
+Course: Embedded Systems (Politecnico di Milano) Author: Stiliyan Andreev
 
 Project Overview
 This project implements a Single-Threaded, Cooperative HTTP 1.0 Server using C++20 Coroutines and Winsock.
@@ -162,15 +162,5 @@ output for the --- HTTP Server (Async/Non-Blocking) on 8080 --- (first terminal)
 [SERVER] Task finished.
 [SCHEDULER] New client in slot 1
 [SERVER] Full request received.
-[SERVER] Task finished.
-[SCHEDULER] New client in slot 1
-[SERVER] Full request received.
-[SERVER] Task finished.
-[SCHEDULER] New client in slot 1
-[SERVER] Full request received.
-[SERVER] Task finished.
-[SERVER] Full request received.
-[SERVER] Task finished.
-[SCHEDULER] New client in slot 0
 
 ```
